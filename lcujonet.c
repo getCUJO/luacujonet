@@ -37,65 +37,72 @@
 #include <lua.h>
 #include <lauxlib.h>
 
-#define CUJO_NETCFGMT "cujo_LuaNetCfg"
+#define CUJO_NETCFGMT "lnetconf"
 
-typedef struct LuaNetCfg {
+typedef struct lnetconf {
 	int sock;
-} LuaNetCfg;
+} lnetconf;
 
-#define chklnetcfg(L)	((LuaNetCfg *)luaL_checkudata(L, 1, CUJO_NETCFGMT))
+#define chklnetconf(L)	((lnetconf *)luaL_checkudata(L, 1, CUJO_NETCFGMT))
 
 /* string = tostring(watcher) */
-static int lcfg_tostring (lua_State *L)
+static int
+lcfg_tostring (lua_State *L)
 {
-	LuaNetCfg *lnetcfg = chklnetcfg(L);
-	if (lnetcfg->sock == -1)
+	lnetconf *conf = chklnetconf(L);
+	if (conf->sock == -1)
 		lua_pushliteral(L, "netcfg (closed)");
 	else
-		lua_pushfstring(L, "netcfg (%p)", lnetcfg);
+		lua_pushfstring(L, "netcfg (%p)", conf);
 	return 1;
 }
 
 
-static int closenetcfg (lua_State *L, LuaNetCfg *lnetcfg)
+static int
+closenetcfg (lua_State *L, lnetconf *conf)
 {
-	int err = close(lnetcfg->sock);
-	if (!err) lnetcfg->sock = -1;  /* mark watcher as closed */
+	int err = close(conf->sock);
+	if (!err) conf->sock = -1;  /* mark watcher as closed */
 	return luaL_fileresult(L, !err, NULL);
 }
 
-static int lcfg_gc(lua_State *L)
+static int
+lcfg_gc(lua_State *L)
 {
-	LuaNetCfg *lnetcfg = chklnetcfg(L);
-	if (lnetcfg->sock != -1) closenetcfg(L, lnetcfg);
+	lnetconf *conf = chklnetconf(L);
+	if (conf->sock != -1) closenetcfg(L, conf);
 	return 0;
 }
 
 
-static LuaNetCfg *tolnetcfg (lua_State *L) {
-	LuaNetCfg *lnetcfg = chklnetcfg(L);
-	if (lnetcfg->sock == -1) luaL_error(L, "attempt to use a closed ARP table");
-	return lnetcfg;
+static lnetconf *
+tolnetconf (lua_State *L) {
+	lnetconf *conf = chklnetconf(L);
+	if (conf->sock == -1) luaL_error(L, "attempt to use a closed ARP table");
+	return conf;
 }
 
 /* succ [, errmsg] = watcher:close() */
-static int lcfg_close(lua_State *L)
+static int
+lcfg_close(lua_State *L)
 {
-	LuaNetCfg *lnetcfg = tolnetcfg(L);
-	return closenetcfg(L, lnetcfg);
+	lnetconf *conf = tolnetconf(L);
+	return closenetcfg(L, conf);
 }
 
-static int lnet_newcfg(lua_State *L)
+static int
+lnet_newcfg(lua_State *L)
 {
-	LuaNetCfg *lnetcfg = (LuaNetCfg *)lua_newuserdata(L, sizeof(LuaNetCfg));
-	lnetcfg->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	if (lnetcfg->sock == -1) return luaL_fileresult(L, 0, NULL);
+	lnetconf *conf = (lnetconf *)lua_newuserdata(L, sizeof(lnetconf));
+	conf->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (conf->sock == -1) return luaL_fileresult(L, 0, NULL);
 	luaL_setmetatable(L, CUJO_NETCFGMT);
 	return 1;
 }
 
 #define MAX_LITERAL_ADDR (INET6_ADDRSTRLEN+1)
-static void pushaddr(lua_State *L, struct sockaddr *addr)
+static void
+pushaddr(lua_State *L, struct sockaddr *addr)
 {
 	char buf[MAX_LITERAL_ADDR];
 	switch (addr->sa_family) {
@@ -117,9 +124,10 @@ static void pushaddr(lua_State *L, struct sockaddr *addr)
 	}
 }
 
-static int getmac(LuaNetCfg *lnetcfg, struct arpreq *req)
+static int
+getmac(lnetconf *conf, struct arpreq *req)
 {
-	if (ioctl(lnetcfg->sock, SIOCGARP, req) != -1) {
+	if (ioctl(conf->sock, SIOCGARP, req) != -1) {
 		struct ether_addr *addr = (struct ether_addr *)req->arp_ha.sa_data;
 		int i;
 		/* check if SIOCGARP gave us a bogus MAC of zeroes */
@@ -129,20 +137,23 @@ static int getmac(LuaNetCfg *lnetcfg, struct arpreq *req)
 	return 0;
 }
 
-static int sendudp(LuaNetCfg *lnetcfg, struct arpreq *req)
+static int
+sendudp(lnetconf *conf, struct arpreq *req)
 {
-	int sent = sendto(lnetcfg->sock, NULL, 0, 0, &req->arp_pa,
+	int sent = sendto(conf->sock, NULL, 0, 0, &req->arp_pa,
 	                  sizeof(struct sockaddr_in));
 	return sent != -1;
 }
 
-static int lcfg_getarpentry(lua_State *L)
+static int
+lcfg_getarpentry(lua_State *L)
 {
-	LuaNetCfg *lnetcfg = tolnetcfg(L);
+	lnetconf *conf = tolnetconf(L);
 	struct arpreq req;
 	size_t devlen;
 	const char *devname = luaL_checklstring(L, 2, &devlen);
 	const char *ip = luaL_checkstring(L, 3);
+	int cacheonly = lua_toboolean(L, 4);
 	struct sockaddr_in *inetaddr = (struct sockaddr_in *)&req.arp_pa;
 	luaL_argcheck(L, devlen < sizeof(req.arp_dev), 2,
 		"interface device name too long");
@@ -152,25 +163,29 @@ static int lcfg_getarpentry(lua_State *L)
 	req.arp_pa.sa_family = AF_INET;
 	req.arp_ha.sa_family = ARPHRD_ETHER;
 	memcpy(req.arp_dev, devname, devlen);
-	if (getmac(lnetcfg, &req) || (sendudp(lnetcfg, &req) && getmac(lnetcfg, &req)))
+	if (getmac(conf, &req) || (!cacheonly &&
+	                           sendudp(conf, &req) &&
+	                           getmac(conf, &req)))
 		pushaddr(L, &req.arp_ha);
 	else
 		lua_pushnil(L);
 	return 1;
 }
 
-static int failcfg(lua_State *L, unsigned long action, struct ifreq *req)
+static int
+failcfg(lua_State *L, unsigned long action, struct ifreq *req)
 {
-	LuaNetCfg *lnetcfg = tolnetcfg(L);
+	lnetconf *conf = tolnetconf(L);
 	size_t devlen;
 	const char *devname = luaL_checklstring(L, 2, &devlen);
 	luaL_argcheck(L, devlen < IFNAMSIZ, 2, "interface device name too long");
 	strncpy(req->ifr_name, devname, devlen);
-	return ioctl(lnetcfg->sock, action, req);
+	return ioctl(conf->sock, action, req);
 }
 
 #define lcfg_getparam(action, field, pushf) \
-	static int lcfg_getdev##field(lua_State *L) \
+	static int \
+	lcfg_getdev##field(lua_State *L) \
 	{ \
 		struct ifreq req; \
 		memset(&req, 0, sizeof(req)); \
@@ -180,7 +195,8 @@ static int failcfg(lua_State *L, unsigned long action, struct ifreq *req)
 	}
 
 #define lcfg_setparam(action, field, getargf) \
-	static int lcfg_setdev##field(lua_State *L) \
+	static int \
+	lcfg_setdev##field(lua_State *L) \
 	{ \
 		struct ifreq req; \
 		memset(&req, 0, sizeof(req)); \
@@ -188,7 +204,8 @@ static int failcfg(lua_State *L, unsigned long action, struct ifreq *req)
 		return luaL_fileresult(L, !failcfg(L, action, &req), NULL); \
 	}
 
-static void getinetaddr(lua_State *L, int arg, struct sockaddr *addr)
+static void
+getinetaddr(lua_State *L, int arg, struct sockaddr *addr)
 {
 	const char *literal = luaL_checkstring(L, arg);
 	struct sockaddr_in *inet = (struct sockaddr_in *)addr;
@@ -197,7 +214,8 @@ static void getinetaddr(lua_State *L, int arg, struct sockaddr *addr)
 	inet->sin_family = AF_INET;
 }
 
-static void getetheraddr(lua_State *L, int arg, struct sockaddr *addr)
+static void
+getetheraddr(lua_State *L, int arg, struct sockaddr *addr)
 {
 	const char *literal = luaL_checkstring(L, arg);
 	struct ether_addr *hwaddr = (struct ether_addr *)addr->sa_data;
@@ -206,12 +224,14 @@ static void getetheraddr(lua_State *L, int arg, struct sockaddr *addr)
 	memcpy(hwaddr, res, sizeof(struct ether_addr));
 }
 
-static void pushintval(lua_State *L, int *value)
+static void
+pushintval(lua_State *L, int *value)
 {
 	lua_pushinteger(L, *value);
 }
 
-static void getintarg(lua_State *L, int arg, int *value)
+static void
+getintarg(lua_State *L, int arg, int *value)
 {
 	*value = (int)luaL_checkinteger(L, arg);
 }
@@ -246,7 +266,8 @@ checkattribflag(lua_State *L, int arg)
 	return luaL_argerror(L, arg, lua_pushfstring(L, "invalid flag '%s'", name));
 }
 
-static int lcfg_getdevattrib(lua_State *L)
+static int
+lcfg_getdevattrib(lua_State *L)
 {
 	struct ifreq req;
 	int arg, narg = lua_gettop(L);
@@ -259,7 +280,8 @@ static int lcfg_getdevattrib(lua_State *L)
 	return narg-2;
 }
 
-static int lcfg_setdevattrib(lua_State *L)
+static int
+lcfg_setdevattrib(lua_State *L)
 {
 	struct ifreq req;
 	int arg, narg = lua_gettop(L);
@@ -274,15 +296,16 @@ static int lcfg_setdevattrib(lua_State *L)
 	return luaL_fileresult(L, !failcfg(L, SIOCSIFFLAGS, &req), NULL);
 }
 
-static int lcfg_getdevname(lua_State *L)
+static int
+lcfg_getdevname(lua_State *L)
 {
 	struct ifreq req;
-	LuaNetCfg *lnetcfg = tolnetcfg(L);
+	lnetconf *conf = tolnetconf(L);
 	lua_Integer index = luaL_checkinteger(L, 2);
 	luaL_argcheck(L, 0 <= index && index <= INT_MAX, 2, "invalid device index");
 	memset(&req, 0, sizeof(req));
 	req.ifr_ifindex = (int)index;
-	if (ioctl(lnetcfg->sock, SIOCGIFNAME, &req))
+	if (ioctl(conf->sock, SIOCGIFNAME, &req))
 		return luaL_fileresult(L, 0, NULL);
 	lua_pushstring(L, req.ifr_name);
 	return 1;
@@ -335,7 +358,8 @@ static const luaL_Reg func[] = {
 	{NULL, NULL}
 };
 
-LUALIB_API int luaopen_cujo_net (lua_State *L)
+LUALIB_API int
+luaopen_cujo_net (lua_State *L)
 {
 	luaL_newmetatable(L, CUJO_NETCFGMT);
 	luaL_setfuncs(L, meta, 0);
