@@ -24,6 +24,7 @@
  * THE SOFTWARE.
  */
 
+#include <errno.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -135,6 +136,43 @@ getmac(lnetconf *conf, struct arpreq *req)
 			if (addr->ether_addr_octet[i]) return 1;
 	}
 	return 0;
+}
+
+static size_t addr_size[] = {sizeof(struct in_addr), sizeof(struct in6_addr)};
+static int addr_domain[] = {AF_INET, AF_INET6};
+static const char *const addr_opts[] = {"ipv4", "ipv6", NULL};
+
+static int
+lnet_iptobin(lua_State *L)
+{
+	unsigned char buf[sizeof(struct in6_addr)];
+	int kind = luaL_checkoption(L, 1, NULL, addr_opts);
+	const char *addr = luaL_checkstring(L, 2);
+	if (inet_pton(addr_domain[kind], addr, buf) == 1) {
+		lua_pushlstring(L, buf, addr_size[kind]);
+		return 1;
+	}
+	lua_pushnil(L);
+	lua_pushstring(L, strerror(errno));
+	return 2;
+}
+
+static int
+lnet_bintoip(lua_State *L)
+{
+	static size_t maxsz[] = {INET_ADDRSTRLEN, INET6_ADDRSTRLEN};
+	unsigned char buf[INET6_ADDRSTRLEN];
+	int kind = luaL_checkoption(L, 1, NULL, addr_opts);
+	size_t n;
+	const char *addr = luaL_checklstring(L, 2, &n);
+	luaL_argcheck(L, n == addr_size[kind], 2, "invalid address");
+	if (inet_ntop(addr_domain[kind], addr, buf, maxsz[kind]) != NULL) {
+		lua_pushstring(L, buf);
+		return 1;
+	}
+	lua_pushnil(L);
+	lua_pushstring(L, strerror(errno));
+	return 2;
 }
 
 static int
@@ -355,6 +393,8 @@ static const luaL_Reg meth[] = {
 
 static const luaL_Reg func[] = {
 	{"newcfg", lnet_newcfg},
+	{"iptobin", lnet_iptobin},
+	{"bintoip", lnet_bintoip},
 	{NULL, NULL}
 };
 
